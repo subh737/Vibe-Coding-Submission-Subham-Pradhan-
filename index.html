@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Currency Converter</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <style>
+    :root { --bg:#f5f7fb; --card:#fff; --text:#1f2937; --muted:#6b7280; --accent:#2563eb; --border:#e5e7eb; --err:#dc2626; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--text); }
+    .wrap { max-width: 900px; margin: 0 auto; padding: 24px 16px; }
+    h1 { margin: 0 0 4px; font-size: 1.6rem; }
+    .muted { color: var(--muted); font-size: .85rem; }
+    .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:20px; margin-top:16px; }
+    .card h2 { margin:0 0 12px; font-size:1.05rem; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    input, select, button { font-size:1rem; padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:#fff; }
+    input { flex:1; min-width:140px; }
+    select { min-width:110px; }
+    button { cursor:pointer; background:var(--accent); color:#fff; border:none; }
+    button.ghost { background:#eef2ff; color:var(--accent); }
+    .result { font-size:1.6rem; font-weight:600; margin-top:14px; }
+    .error { color:var(--err); margin-top:8px; min-height:1.2em; }
+    .chips { display:flex; gap:8px; flex-wrap:wrap; }
+    .chip { display:inline-flex; align-items:center; gap:6px; background:#eef2ff; color:var(--accent); padding:6px 10px; border-radius:999px; cursor:pointer; font-size:.9rem; }
+    .chip span.x { color:var(--muted); font-weight:bold; }
+    table { width:100%; border-collapse:collapse; margin-top:12px; }
+    th, td { text-align:left; padding:10px; border-bottom:1px solid var(--border); }
+    th { color:var(--muted); font-weight:500; font-size:.85rem; }
+    ul { list-style:none; padding:0; margin:0; }
+    li { padding:8px 0; border-bottom:1px solid var(--border); cursor:pointer; }
+    .switch { display:flex; align-items:center; gap:8px; font-weight:500; cursor:pointer; }
+    .hidden { display:none; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>💱 Currency Converter</h1>
+  <div class="muted" id="updated">Loading rates…</div>
+
+  <!-- Converter -->
+  <div class="card">
+    <h2>Convert</h2>
+    <div class="row">
+      <input id="amount" type="number" min="0" step="any" value="100" placeholder="Amount" />
+      <select id="from"></select>
+      <button class="ghost" id="swap" title="Swap">⇄</button>
+      <select id="to"></select>
+      <button id="convertBtn">Convert</button>
+      <button class="ghost" id="favBtn" title="Save pair">★ Save</button>
+    </div>
+    <div class="result" id="result"></div>
+    <div class="muted" id="rateLine"></div>
+    <div class="error" id="error"></div>
+  </div>
+
+  <!-- Favorites -->
+  <div class="card">
+    <h2>Favorite pairs</h2>
+    <div class="chips" id="favorites"><span class="muted">No favorites yet.</span></div>
+  </div>
+
+  <!-- Trend -->
+  <div class="card">
+    <h2 id="trendTitle">30-day trend</h2>
+    <canvas id="chart" height="110"></canvas>
+    <div class="muted" id="trendMsg"></div>
+  </div>
+
+  <!-- Travel Budgeting -->
+  <div class="card">
+    <label class="switch"><input type="checkbox" id="travelToggle" style="flex:none;min-width:0" /> ✈️ Travel Budgeting mode</label>
+    <div id="travelSection" class="hidden" style="margin-top:12px">
+      <div class="row">
+        <input id="travelAmount" type="number" min="0" step="any" value="50000" placeholder="Budget" />
+        <select id="travelBase"></select>
+        <button id="travelBtn">Compare</button>
+      </div>
+      <table id="travelTable" class="hidden">
+        <thead><tr><th>Currency</th><th>Rate</th><th>Your budget</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="error" id="travelError"></div>
+    </div>
+  </div>
+
+  <!-- History -->
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <h2 style="margin:0">Recent conversions</h2>
+      <button class="ghost" id="clearHistory">Clear</button>
+    </div>
+    <ul id="history" style="margin-top:8px"><li class="muted">No conversions yet.</li></ul>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let chart = null;
+
+async function api(path, options) {
+  const res = await fetch(path, options);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(typeof data.detail === "string" ? data.detail : "Please enter a valid amount.");
+  }
+  return data;
+}
+
+const fmt = (n, cur) => {
+  try { return new Intl.NumberFormat(undefined, { style: "currency", currency: cur }).format(n); }
+  catch { return `${n.toLocaleString()} ${cur}`; }
+};
+
+function fillSelect(sel, list, value) {
+  sel.innerHTML = "";
+  list.forEach((c) => sel.add(new Option(c, c)));
+  if (list.includes(value)) sel.value = value;
+}
+
+// ---------- converter ----------
+async function convert() {
+  $("error").textContent = "";
+  const amount = parseFloat($("amount").value);
+  if (!amount || amount <= 0) { $("error").textContent = "Enter an amount greater than 0."; return; }
+  const from = $("from").value, to = $("to").value;
+  try {
+    const d = await api(`/api/convert?from=${from}&to=${to}&amount=${amount}`);
+    $("result").textContent = `${fmt(d.amount, from)} = ${fmt(d.result, to)}`;
+    $("rateLine").textContent = `1 ${from} = ${d.rate} ${to}`;
+    loadHistory();
+  } catch (e) { $("error").textContent = e.message; }
+}
+
+// ---------- trend ----------
+let trendReq = 0;
+const fmtRate = (n) => Number(n.toPrecision(6));
+async function loadTrend() {
+  const from = $("from").value, to = $("to").value;
+  const req = ++trendReq;  // ignore responses for pairs the user has already switched away from
+  $("trendTitle").textContent = `30-day trend: ${from} → ${to}`;
+  $("trendMsg").textContent = "Loading…";
+  try {
+    const d = await api(`/api/trend?from=${from}&to=${to}`);
+    if (req !== trendReq) return;
+    if (chart) { chart.destroy(); chart = null; }
+    if (!d.available) { $("trendMsg").textContent = "Historical data isn't available for this pair right now. Try again in a moment."; return; }
+    const rates = d.points.map((p) => p.rate);
+    const change = ((rates[rates.length - 1] - rates[0]) / rates[0] * 100).toFixed(2);
+    $("trendMsg").textContent = `Low ${fmtRate(Math.min(...rates))} · High ${fmtRate(Math.max(...rates))} · Change ${change}%`;
+    chart = new Chart($("chart"), {
+      type: "line",
+      data: { labels: d.points.map((p) => p.date), datasets: [{ label: `${from}/${to}`, data: rates, borderColor: "#2563eb", backgroundColor: "rgba(37,99,235,.1)", fill: true, tension: .3, pointRadius: 2 }] },
+      options: { plugins: { legend: { display: false } }, scales: { x: { ticks: { maxTicksLimit: 8 } } } },
+    });
+  } catch (e) { if (req === trendReq) $("trendMsg").textContent = "Couldn't load trend data."; }
+}
+
+// ---------- favorites ----------
+async function loadFavorites() {
+  const favs = await api("/api/favorites");
+  const box = $("favorites");
+  box.innerHTML = "";
+  if (!favs.length) { box.innerHTML = '<span class="muted">No favorites yet.</span>'; return; }
+  favs.forEach((f) => {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.textContent = `${f.from_cur} → ${f.to_cur} `;
+    chip.onclick = () => { $("from").value = f.from_cur; $("to").value = f.to_cur; onPairChange(); convert(); };
+    const x = document.createElement("span");
+    x.className = "x"; x.textContent = "×"; x.title = "Remove";
+    x.onclick = async (ev) => { ev.stopPropagation(); await api(`/api/favorites/${f.id}`, { method: "DELETE" }); loadFavorites(); };
+    chip.appendChild(x);
+    box.appendChild(chip);
+  });
+}
+
+async function saveFavorite() {
+  try {
+    await api("/api/favorites", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ from_cur: $("from").value, to_cur: $("to").value }),
+    });
+    loadFavorites();
+  } catch (e) { $("error").textContent = e.message; }
+}
+
+// ---------- history ----------
+async function loadHistory() {
+  const rows = await api("/api/history?limit=10");
+  const ul = $("history");
+  ul.innerHTML = "";
+  if (!rows.length) { ul.innerHTML = '<li class="muted">No conversions yet.</li>'; return; }
+  rows.forEach((r) => {
+    const li = document.createElement("li");
+    li.textContent = `${fmt(r.amount, r.from_cur)} → ${fmt(r.result, r.to_cur)}`;
+    const t = document.createElement("span");
+    t.className = "muted"; t.textContent = `  ·  ${r.created_at} UTC`;
+    li.appendChild(t);
+    li.onclick = () => { $("amount").value = r.amount; $("from").value = r.from_cur; $("to").value = r.to_cur; onPairChange(); convert(); };
+    ul.appendChild(li);
+  });
+}
+
+// ---------- travel ----------
+async function travel() {
+  $("travelError").textContent = "";
+  const amount = parseFloat($("travelAmount").value);
+  if (!amount || amount <= 0) { $("travelError").textContent = "Enter a budget greater than 0."; return; }
+  const base = $("travelBase").value;
+  try {
+    const d = await api(`/api/travel?base=${base}&amount=${amount}`);
+    const tbody = $("travelTable").querySelector("tbody");
+    tbody.innerHTML = "";
+    d.rows.forEach((r) => {
+      const tr = document.createElement("tr");
+      [r.currency, `1 ${base} = ${r.rate}`, fmt(r.amount, r.currency)].forEach((v) => {
+        const td = document.createElement("td"); td.textContent = v; tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    $("travelTable").classList.remove("hidden");
+  } catch (e) { $("travelError").textContent = e.message; }
+}
+
+function onPairChange() { loadTrend(); }
+
+// ---------- init ----------
+async function init() {
+  try {
+    const d = await api("/api/currencies");
+    fillSelect($("from"), d.currencies, "USD");
+    fillSelect($("to"), d.currencies, "INR");
+    fillSelect($("travelBase"), d.currencies, "INR");
+    $("updated").textContent = d.updated ? `Rates last updated: ${d.updated}` : "";
+  } catch (e) { $("updated").textContent = e.message; return; }
+
+  $("convertBtn").onclick = convert;
+  $("amount").addEventListener("keydown", (e) => { if (e.key === "Enter") convert(); });
+  $("swap").onclick = () => { [$("from").value, $("to").value] = [$("to").value, $("from").value]; onPairChange(); convert(); };
+  $("from").onchange = $("to").onchange = onPairChange;
+  $("favBtn").onclick = saveFavorite;
+  $("clearHistory").onclick = async () => { await api("/api/history", { method: "DELETE" }); loadHistory(); };
+  $("travelToggle").onchange = (e) => $("travelSection").classList.toggle("hidden", !e.target.checked);
+  $("travelBtn").onclick = travel;
+
+  loadFavorites(); loadHistory(); loadTrend(); convert();
+}
+init();
+</script>
+</body>
+</html>
